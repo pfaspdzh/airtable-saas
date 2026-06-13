@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Airtable Pro + Distance</title>
+
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial;
+    background: #f6f6f6;
+    margin: 0;
+}
+
+.header {
+    background: white;
+    padding: 15px 20px;
+    border-bottom: 1px solid #e5e5e5;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+button {
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: #111;
+    color: white;
+}
+
+button:hover {
+    background: #333;
+}
+
+.search {
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    flex: 1;
+}
+
+select {
+    padding: 6px;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    background: white;
+}
+
+#filters {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 20px;
+    background: #fafafa;
+    border-bottom: 1px solid #eee;
+}
+
+.container {
+    padding: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+}
+
+th, td {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    text-align: left;
+    font-size: 14px;
+}
+
+th {
+    background: #fafafa;
+}
+
+tr:hover {
+    background: #f1f5f9;
+}
+
+/* BADGES */
+.badge-yes {
+    background: #d1fae5;
+    color: #065f46;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+}
+
+.badge-no {
+    background: #fee2e2;
+    color: #991b1b;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+}
+
+.badge-number {
+    background: #e0f2fe;
+    color: #075985;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+    <h2>📊 Airtable Pro + echte Distanz</h2>
+
+    <button onclick="loadData()">Reload</button>
+
+    <select id="homeSelect" onchange="setHomeCity(this.value)">
+        <option value="">Wohnort wählen</option>
+    </select>
+
+    <input class="search" id="search" placeholder="🔍 Suche..." oninput="render()">
+</div>
+
+<div id="filters"></div>
+
+<div class="container">
+    <table id="table">
+        <thead></thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<script>
+let data = [];
+let columns = [];
+let activeFilters = {};
+let homeCity = "";
+let homeCoords = null;
+let geoCache = {};
+
+// 🚀 LOAD DATA
+async function loadData() {
+    const res = await fetch("http://localhost:3000/data");
+    data = await res.json();
+
+    if (!data.length) return;
+
+    columns = Object.keys(data[0]);
+
+    buildFilters();
+    fillHomeSelect();
+    render();
+}
+
+// 🏠 HOME SET
+async function setHomeCity(city) {
+    homeCity = city;
+
+    if (!city) {
+        homeCoords = null;
+        render();
+        return;
+    }
+
+    homeCoords = await geocode(city);
+    render();
+}
+
+// 🌍 GEOCODE (OpenStreetMap)
+async function geocode(city) {
+    if (geoCache[city]) return geoCache[city];
+
+    const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}`
+    );
+
+    const json = await res.json();
+    if (!json.length) return null;
+
+    const coords = {
+        lat: parseFloat(json[0].lat),
+        lon: parseFloat(json[0].lon)
+    };
+
+    geoCache[city] = coords;
+    return coords;
+}
+
+// 📏 DISTANCE
+function distanceKm(a, b) {
+    const R = 6371;
+
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLon = (b.lon - a.lon) * Math.PI / 180;
+
+    const lat1 = a.lat * Math.PI / 180;
+    const lat2 = b.lat * Math.PI / 180;
+
+    const x =
+        Math.sin(dLat/2) ** 2 +
+        Math.sin(dLon/2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+
+    return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+// 🏠 HOME SELECT
+function fillHomeSelect() {
+    const select = document.getElementById("homeSelect");
+    select.innerHTML = `<option value="">Wohnort wählen</option>`;
+
+    const cities = [...new Set(data.map(r => r.Ort))];
+
+    cities.forEach(c => {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.text = c;
+        select.appendChild(opt);
+    });
+}
+
+// 🔽 FILTER UI
+function buildFilters() {
+    const container = document.getElementById("filters");
+    container.innerHTML = "";
+
+    columns.forEach(col => {
+
+        const set = new Set();
+
+        data.forEach(row => {
+            let val = String(row[col] ?? "");
+
+            if (col.toLowerCase() === "stufen") {
+                val.split(/[;,]/).forEach(v => {
+                    v = v.trim();
+                    if (["1","2","3","4"].includes(v)) set.add(v);
+                });
+            } else {
+                set.add(val);
+            }
+        });
+
+        const values = [...set].sort();
+
+        const select = document.createElement("select");
+
+        const opt0 = document.createElement("option");
+        opt0.text = "Filter " + col;
+        opt0.value = "";
+        select.appendChild(opt0);
+
+        values.forEach(v => {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.text = v;
+            select.appendChild(opt);
+        });
+
+        select.onchange = (e) => {
+            if (!e.target.value) delete activeFilters[col];
+            else activeFilters[col] = e.target.value;
+            render();
+        };
+
+        container.appendChild(select);
+    });
+}
+
+// 🔍 RENDER (DISTANCE SORT INCLUDED)
+async function render() {
+
+    const search = document.getElementById("search").value.toLowerCase();
+
+    let filtered = data.filter(row => {
+
+        for (let key in activeFilters) {
+            const list = String(row[key] ?? "")
+                .split(/[;,]/)
+                .map(v => v.trim());
+
+            if (!list.includes(activeFilters[key])) return false;
+        }
+
+        if (search) {
+            if (!JSON.stringify(row).toLowerCase().includes(search)) return false;
+        }
+
+        return true;
+    });
+
+    // 🌍 DISTANCE SORT
+    if (homeCoords) {
+
+        for (let row of filtered) {
+            row._dist = Infinity;
+        }
+
+        await Promise.all(filtered.map(async row => {
+            const coords = await geocode(row.Ort);
+            if (coords) {
+                row._dist = distanceKm(homeCoords, coords);
+            }
+        }));
+
+        filtered.sort((a,b) => a._dist - b._dist);
+    }
+
+    drawTable(filtered);
+}
+
+// 📊 TABLE
+function drawTable(rows) {
+
+    const thead = document.querySelector("#table thead");
+    const tbody = document.querySelector("#table tbody");
+
+    thead.innerHTML = "";
+    tbody.innerHTML = "";
+
+    if (!rows.length) return;
+
+    const cols = Object.keys(rows[0]);
+
+    let head = "<tr>";
+    cols.forEach(c => head += `<th>${c}</th>`);
+    head += "</tr>";
+    thead.innerHTML = head;
+
+    rows.forEach(r => {
+        let tr = "<tr>";
+
+        cols.forEach(c => {
+
+            let val = String(r[c] ?? "").trim();
+            let low = val.toLowerCase();
+
+            if (low === "ja") {
+                tr += `<td><span class="badge-yes">JA</span></td>`;
+            }
+            else if (low === "nein") {
+                tr += `<td><span class="badge-no">NEIN</span></td>`;
+            }
+            else if (["1","2","3","4"].includes(val)) {
+                tr += `<td><span class="badge-number">${val}</span></td>`;
+            }
+            else {
+                tr += `<td>${val}</td>`;
+            }
+        });
+
+        tr += "</tr>";
+        tbody.innerHTML += tr;
+    });
+}
+
+// 🚀 START
+loadData();
+</script>
+
+</body>
+</html>
