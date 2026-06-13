@@ -12,7 +12,7 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// 📊 API
+// 📊 DATA
 app.get("/data", async (req, res) => {
   const { data, error } = await supabase
     .from("projects")
@@ -23,45 +23,59 @@ app.get("/data", async (req, res) => {
   res.json(data);
 });
 
-// 🧠 SIMPLE IN-MEMORY CACHE (wichtig gegen OSM limit)
-const geoCache = {};
+// 🧠 CACHE
+const cache = {};
 
-// 🌍 GEOCODING (OpenStreetMap)
+// 🌍 GEOCODING (2 SOURCES)
 async function getCoords(place) {
   if (!place) return null;
+  if (cache[place]) return cache[place];
 
-  if (geoCache[place]) return geoCache[place];
-
+  // 1️⃣ OPENSTREETMAP
   try {
-    const res = await fetch(
+    let res = await fetch(
       "https://nominatim.openstreetmap.org/search?format=json&q=" +
       encodeURIComponent(place),
       {
-        headers: {
-          "User-Agent": "saas-app"
-        }
+        headers: { "User-Agent": "saas-app" }
       }
     );
 
-    const json = await res.json();
+    let json = await res.json();
 
-    if (!json || !json[0]) return null;
+    if (json?.[0]) {
+      const coords = {
+        lat: parseFloat(json[0].lat),
+        lon: parseFloat(json[0].lon)
+      };
+      cache[place] = coords;
+      return coords;
+    }
+  } catch (e) {}
 
-    const coords = {
-      lat: parseFloat(json[0].lat),
-      lon: parseFloat(json[0].lon)
-    };
+  // 2️⃣ FALLBACK (wichtig!)
+  try {
+    let res = await fetch(
+      "https://geocoding-api.open-meteo.com/v1/search?name=" +
+      encodeURIComponent(place)
+    );
 
-    geoCache[place] = coords;
+    let json = await res.json();
 
-    return coords;
+    if (json?.results?.[0]) {
+      const coords = {
+        lat: json.results[0].latitude,
+        lon: json.results[0].longitude
+      };
+      cache[place] = coords;
+      return coords;
+    }
+  } catch (e) {}
 
-  } catch (e) {
-    return null;
-  }
+  return null;
 }
 
-// 📏 DISTANZ (Haversine)
+// 📏 DISTANCE
 function distanceKm(a, b) {
   const R = 6371;
 
@@ -80,11 +94,9 @@ function distanceKm(a, b) {
 // 🌐 FRONTEND
 app.get("/", async (req, res) => {
 
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("projects")
     .select("*");
-
-  if (error) return res.send("Fehler beim Laden");
 
   const cities = [...new Set(data.map(d => d.Ort).filter(Boolean))];
 
@@ -93,199 +105,128 @@ app.get("/", async (req, res) => {
 <html>
 <head>
 <meta charset="UTF-8">
-<title>SaaS Distance Sort</title>
+<title>SaaS Distance</title>
 
 <style>
-body { font-family: Arial; margin:0; background:#f5f6f8; }
-
-.header {
-  padding:12px;
-  background:white;
-  border-bottom:1px solid #ddd;
-  font-weight:bold;
-}
-
-.filters {
-  padding:10px;
-  background:white;
-  display:flex;
-  gap:10px;
-  flex-wrap:wrap;
-  border-bottom:1px solid #ddd;
-}
-
-input, select, button {
-  padding:8px;
-  border:1px solid #ccc;
-  border-radius:6px;
-}
-
-.container { padding:10px; overflow-x:auto; }
-
-table {
-  width:100%;
-  min-width:900px;
-  border-collapse:collapse;
-  background:white;
-}
-
-th, td {
-  padding:8px;
-  border-bottom:1px solid #eee;
-  font-size:13px;
-}
-
-th { background:#fafafa; }
-
-tr:hover { background:#f0f7ff; }
+body{font-family:Arial;margin:0;background:#f5f6f8}
+.header{padding:12px;background:#fff;border-bottom:1px solid #ddd}
+.filters{padding:10px;background:#fff;display:flex;gap:10px;flex-wrap:wrap}
+input,select,button{padding:8px}
+table{width:100%;background:#fff;border-collapse:collapse}
+td,th{padding:8px;border-bottom:1px solid #eee}
+th{background:#fafafa}
 </style>
-
 </head>
 
 <body>
 
-<div class="header">📍 SaaS – Echte Distanz Sortierung</div>
+<div class="header">📍 SaaS – stabile Distanzsuche</div>
 
 <div class="filters">
-
-<input id="userLoc" placeholder="Ort eingeben (z.B. Zürich)" />
-
-<select id="suggest">
-  <option value="">Vorschlag</option>
-  ${cities.map(c => `<option value="${c}">${c}</option>`).join("")}
+<input id="loc" placeholder="Ort (z.B. Zürich, Berlin, Paris)" />
+<select id="s">
+<option value="">Vorschläge</option>
+${cities.map(c => `<option value="${c}">${c}</option>`).join("")}
 </select>
-
-<button onclick="sortByDistance()">Sortieren</button>
-
+<button onclick="run()">Sortieren</button>
 </div>
-
-<div class="container">
 
 <table>
 <thead>
 <tr>
 <th>Name</th>
 <th>Ort</th>
-<th>Typus</th>
-<th>Distanz (km)</th>
+<th>Distanz</th>
 </tr>
 </thead>
-
-<tbody id="body"></tbody>
-
+<tbody id="t"></tbody>
 </table>
-
-</div>
 
 <script>
 
 const data = ${JSON.stringify(data)};
+const cache = {};
 
-let cache = {};
+async function getCoords(place){
 
-async function getCoords(place) {
-  if (!place) return null;
+  if(cache[place]) return cache[place];
 
-  if (cache[place]) return cache[place];
+  try{
+    let r = await fetch("https://geocoding-api.open-meteo.com/v1/search?name="+encodeURIComponent(place));
+    let j = await r.json();
 
-  try {
-    const res = await fetch(
-      "https://nominatim.openstreetmap.org/search?format=json&q=" +
-      encodeURIComponent(place)
-    );
+    if(j?.results?.[0]){
+      let c = {
+        lat:j.results[0].latitude,
+        lon:j.results[0].longitude
+      };
+      cache[place]=c;
+      return c;
+    }
+  }catch(e){}
 
-    const json = await res.json();
-
-    if (!json[0]) return null;
-
-    const coords = {
-      lat: parseFloat(json[0].lat),
-      lon: parseFloat(json[0].lon)
-    };
-
-    cache[place] = coords;
-
-    return coords;
-
-  } catch (e) {
-    return null;
-  }
+  return null;
 }
 
-function distanceKm(a, b) {
-  const R = 6371;
+function dist(a,b){
+  const R=6371;
+  const dLat=(b.lat-a.lat)*Math.PI/180;
+  const dLon=(b.lon-a.lon)*Math.PI/180;
 
-  const dLat = (b.lat - a.lat) * Math.PI / 180;
-  const dLon = (b.lon - a.lon) * Math.PI / 180;
+  const x=Math.sin(dLat/2)**2+
+    Math.cos(a.lat*Math.PI/180)*
+    Math.cos(b.lat*Math.PI/180)*
+    Math.sin(dLon/2)**2;
 
-  const x =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(a.lat * Math.PI / 180) *
-    Math.cos(b.lat * Math.PI / 180) *
-    Math.sin(dLon / 2) ** 2;
-
-  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
 }
 
-function render(rows) {
-
-  let html = "";
-
-  rows.forEach(r => {
-    html += "<tr>" +
-      "<td>" + (r.Name || "") + "</td>" +
-      "<td>" + (r.Ort || "") + "</td>" +
-      "<td>" + (r.Typus || "") + "</td>" +
-      "<td>" + (r.dist ? r.dist.toFixed(1) : "-") + "</td>" +
-      "</tr>";
-  });
-
-  document.getElementById("body").innerHTML = html;
+function render(rows){
+  document.getElementById("t").innerHTML =
+    rows.map(r=>
+      "<tr><td>"+r.Name+"</td><td>"+r.Ort+"</td><td>"+(r.d? r.d.toFixed(1):"-")+"</td></tr>"
+    ).join("");
 }
 
-async function sortByDistance() {
+async function run(){
 
   const place =
-    document.getElementById("userLoc").value ||
-    document.getElementById("suggest").value;
-
-  if (!place) {
-    render(data);
-    return;
-  }
+    document.getElementById("loc").value ||
+    document.getElementById("s").value;
 
   const user = await getCoords(place);
 
-  if (!user) {
-    alert("Ort nicht gefunden");
+  if(!user){
+    alert("Ort nicht gefunden (versuch: Zürich, Zurich, Switzerland)");
     return;
   }
 
-  const enriched = [];
+  let arr = [];
 
-  for (const d of data) {
+  for(let r of data){
 
-    let dist = 999999;
+    let target = await getCoords(r.Ort);
 
-    const target = await getCoords(d.Ort);
+    let d = 999999;
 
-    if (target) {
-      dist = distanceKm(user, target);
+    if(target){
+      d = dist(user,target);
     }
 
-    enriched.push({ ...d, dist });
+    arr.push({...r,d});
+
   }
 
-  enriched.sort((a, b) => a.dist - b.dist);
+  arr.sort((a,b)=>a.d-b.d);
 
-  render(enriched);
+  render(arr);
 }
 
 render(data);
 
-document.getElementById("suggest").addEventListener("change", e => {
-  document.getElementById("userLoc").value = e.target.value;
-});
+document.getElementById("s").onchange=(e)=>{
+  document.getElementById("loc").value=e.target.value;
+};
 
 </script>
 
@@ -294,8 +235,5 @@ document.getElementById("suggest").addEventListener("change", e => {
   `);
 });
 
-// 🚀 START
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server läuft auf", PORT);
-});
+app.listen(PORT, () => console.log("running"));
