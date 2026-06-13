@@ -1,24 +1,37 @@
 const express = require("express");
 const cors = require("cors");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
-const data = [
-  { Name: "Projekt A", Stufe: "1", Status: "Ja", Ort: "Zürich" },
-  { Name: "Projekt B", Stufe: "2", Status: "Nein", Ort: "Bern" },
-  { Name: "Projekt C", Stufe: "3", Status: "Ja", Ort: "Basel" },
-  { Name: "Projekt D", Stufe: "4", Status: "Nein", Ort: "Zürich" }
-];
+// 🔑 SUPABASE CONNECT
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
-app.get("/data", (req, res) => {
+// 📊 GET DATA (ECHTE DB)
+app.get("/data", async (req, res) => {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*");
+
+  if (error) {
+    console.error("DB ERROR:", error);
+    return res.status(500).json({ error: error.message });
+  }
+
   res.json(data);
 });
 
+// 🧪 TEST ROUTE
 app.get("/", (req, res) => {
-  res.send("Backend läuft ✔");
+  res.send("Supabase Backend läuft ✔");
 });
 
+// 🚀 START
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on", PORT);
