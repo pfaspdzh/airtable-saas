@@ -31,6 +31,8 @@ app.get("/", async (req, res) => {
 
   if (error) return res.send("Fehler");
 
+  const uniqueCities = [...new Set(data.map(d => d.Ort).filter(Boolean))];
+
   res.send(`
 <!DOCTYPE html>
 <html>
@@ -42,10 +44,10 @@ app.get("/", async (req, res) => {
 body { font-family: Arial; margin:0; background:#f5f6f8; }
 
 .header {
-  padding: 12px;
+  padding:12px;
   background:white;
-  font-weight:bold;
   border-bottom:1px solid #ddd;
+  font-weight:bold;
 }
 
 .filters {
@@ -67,7 +69,7 @@ input, select {
 
 table {
   width:100%;
-  min-width:1100px;
+  min-width:1000px;
   border-collapse:collapse;
   background:white;
 }
@@ -86,15 +88,25 @@ tr:hover { background:#f0f7ff; }
 
 <body>
 
-<div class="header">📊 Airtable SaaS + Echte OSM Distanz</div>
+<div class="header">📊 SaaS – Sortierung nach Nähe + freie Orte</div>
 
 <div class="filters">
-  <input id="search" placeholder="Suche..." />
-  <input id="userLoc" placeholder="Dein Ort (z.B. Zürich)" />
-  <input id="radius" type="number" placeholder="Radius km" />
+
+  <!-- 🎯 freier Ort (wichtig!) -->
+  <input id="userLoc" placeholder="Ort eingeben (z.B. Zürich, Paris, Berlin)" />
+
+  <!-- 📍 Dropdown nur als Hilfe -->
+  <select id="suggest">
+    <option value="">oder Vorschlag wählen</option>
+    ${uniqueCities.map(c => `<option value="${c}">${c}</option>`).join("")}
+  </select>
+
+  <button onclick="sortByDistance()">Nach Nähe sortieren</button>
+
 </div>
 
 <div class="container">
+
 <table>
 <thead>
 <tr>
@@ -108,6 +120,7 @@ tr:hover { background:#f0f7ff; }
 
 <tbody id="body"></tbody>
 </table>
+
 </div>
 
 <script>
@@ -117,13 +130,15 @@ let cache = {};
 
 // 🌍 OpenStreetMap Geocoding
 async function getCoords(place) {
+  if (!place) return null;
   if (cache[place]) return cache[place];
 
-  const url = \`https://nominatim.openstreetmap.org/search?format=json&q=\${encodeURIComponent(place)}\`;
+  const res = await fetch(
+    "https://nominatim.openstreetmap.org/search?format=json&q=" +
+    encodeURIComponent(place)
+  );
 
-  const res = await fetch(url);
   const json = await res.json();
-
   if (!json[0]) return null;
 
   const coords = {
@@ -135,70 +150,78 @@ async function getCoords(place) {
   return coords;
 }
 
-// 📏 Haversine Formel (echte Distanz)
+// 📏 Distanz (Haversine)
 function distanceKm(a, b) {
   const R = 6371;
+
   const dLat = (b.lat - a.lat) * Math.PI / 180;
   const dLon = (b.lon - a.lon) * Math.PI / 180;
 
   const x =
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.sin(dLat/2) ** 2 +
     Math.cos(a.lat * Math.PI/180) *
     Math.cos(b.lat * Math.PI/180) *
-    Math.sin(dLon/2) * Math.sin(dLon/2);
+    Math.sin(dLon/2) ** 2;
 
-  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
-
-  return R * c;
+  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
 }
 
-// 🧠 Render Tabelle
-async function render() {
-  const userLoc = document.getElementById("userLoc").value;
-  const radius = parseFloat(document.getElementById("radius").value || "0");
+// 🎯 SORTIERUNG NACH NÄHE
+async function sortByDistance() {
 
-  let userCoords = null;
+  const input = document.getElementById("userLoc").value;
+  const select = document.getElementById("suggest").value;
 
-  if (userLoc) {
-    userCoords = await getCoords(userLoc);
+  const place = input || select;
+
+  if (!place) {
+    render(data);
+    return;
   }
 
-  const rows = await Promise.all(data.map(async d => {
-    let dist = "-";
+  const user = await getCoords(place);
+  if (!user) {
+    alert("Ort nicht gefunden");
+    return;
+  }
 
-    if (userCoords && d.Ort) {
+  const enriched = await Promise.all(
+    data.map(async d => {
       const target = await getCoords(d.Ort);
+      let dist = 999999;
 
       if (target) {
-        dist = distanceKm(userCoords, target).toFixed(1);
+        dist = distanceKm(user, target);
       }
-    }
 
-    if (radius && dist !== "-" && parseFloat(dist) > radius) {
-      return null;
-    }
+      return { ...d, dist };
+    })
+  );
 
-    return \`
-      <tr>
-        <td>\${d.Name || ""}</td>
-        <td>\${d.Ort || ""}</td>
-        <td>\${d.Typus || ""}</td>
-        <td>\${d.Stufen || ""}</td>
-        <td>\${dist}</td>
-      </tr>
-    \`;
-  }));
+  enriched.sort((a,b) => a.dist - b.dist);
 
-  document.getElementById("body").innerHTML =
-    rows.filter(Boolean).join("");
+  render(enriched);
 }
 
-// Events
-document.getElementById("userLoc").addEventListener("input", render);
-document.getElementById("radius").addEventListener("input", render);
+// 🧾 RENDER
+function render(rows) {
+  document.getElementById("body").innerHTML = rows.map(d => `
+    <tr>
+      <td>${d.Name || ""}</td>
+      <td>${d.Ort || ""}</td>
+      <td>${d.Typus || ""}</td>
+      <td>${d.Stufen || ""}</td>
+      <td>${d.dist ? d.dist.toFixed(1) : "-"}</td>
+    </tr>
+  `).join("");
+}
 
-// init
-render();
+// INIT
+render(data);
+
+document.getElementById("suggest").addEventListener("change", e => {
+  document.getElementById("userLoc").value = e.target.value;
+});
 
 </script>
 
