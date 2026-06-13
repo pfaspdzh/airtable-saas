@@ -3,154 +3,171 @@ const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
+// 🔑 SUPABASE
 const supabase = createClient(
-process.env.SUPABASE_URL,
-process.env.SUPABASE_KEY
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
+// 📊 API
 app.get("/data", async (req, res) => {
-const { data, error } = await supabase
-.from("projects")
-.select("*");
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*");
 
-if (error) {
-return res.status(500).json(error);
-}
+  if (error) return res.status(500).json(error);
 
-res.json(data);
+  res.json(data);
 });
 
+// 🧠 SIMPLE IN-MEMORY CACHE (wichtig gegen OSM limit)
+const geoCache = {};
+
+// 🌍 GEOCODING (OpenStreetMap)
+async function getCoords(place) {
+  if (!place) return null;
+
+  if (geoCache[place]) return geoCache[place];
+
+  try {
+    const res = await fetch(
+      "https://nominatim.openstreetmap.org/search?format=json&q=" +
+      encodeURIComponent(place),
+      {
+        headers: {
+          "User-Agent": "saas-app"
+        }
+      }
+    );
+
+    const json = await res.json();
+
+    if (!json || !json[0]) return null;
+
+    const coords = {
+      lat: parseFloat(json[0].lat),
+      lon: parseFloat(json[0].lon)
+    };
+
+    geoCache[place] = coords;
+
+    return coords;
+
+  } catch (e) {
+    return null;
+  }
+}
+
+// 📏 DISTANZ (Haversine)
+function distanceKm(a, b) {
+  const R = 6371;
+
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+
+  const x =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * Math.PI / 180) *
+    Math.cos(b.lat * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
+
+  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+// 🌐 FRONTEND
 app.get("/", async (req, res) => {
 
-const { data, error } = await supabase
-.from("projects")
-.select("*");
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*");
 
-if (error) {
-return res.send("Fehler beim Laden");
-}
+  if (error) return res.send("Fehler beim Laden");
 
-const uniqueCities = [...new Set(
-data.map(x => x.Ort).filter(Boolean)
-)];
+  const cities = [...new Set(data.map(d => d.Ort).filter(Boolean))];
 
-res.send(`
-
+  res.send(`
 <!DOCTYPE html>
-
-<html lang="de">
+<html>
 <head>
-
 <meta charset="UTF-8">
-
-<title>Airtable SaaS</title>
+<title>SaaS Distance Sort</title>
 
 <style>
+body { font-family: Arial; margin:0; background:#f5f6f8; }
 
-body{
-  font-family:Arial,sans-serif;
-  margin:0;
-  background:#f5f6f8;
-}
-
-.header{
+.header {
+  padding:12px;
   background:white;
-  padding:15px;
   border-bottom:1px solid #ddd;
   font-weight:bold;
 }
 
-.filters{
+.filters {
+  padding:10px;
   background:white;
-  padding:15px;
   display:flex;
   gap:10px;
   flex-wrap:wrap;
   border-bottom:1px solid #ddd;
 }
 
-input,select,button{
+input, select, button {
   padding:8px;
+  border:1px solid #ccc;
+  border-radius:6px;
 }
 
-.container{
-  padding:10px;
-  overflow-x:auto;
-}
+.container { padding:10px; overflow-x:auto; }
 
-table{
+table {
   width:100%;
-  min-width:1000px;
-  background:white;
+  min-width:900px;
   border-collapse:collapse;
+  background:white;
 }
 
-th,td{
-  border-bottom:1px solid #eee;
+th, td {
   padding:8px;
-  text-align:left;
+  border-bottom:1px solid #eee;
+  font-size:13px;
 }
 
-th{
-  background:#fafafa;
-}
+th { background:#fafafa; }
 
-tr:hover{
-  background:#f0f7ff;
-}
-
+tr:hover { background:#f0f7ff; }
 </style>
 
 </head>
+
 <body>
 
-<div class="header">
-📊 Airtable SaaS
-</div>
+<div class="header">📍 SaaS – Echte Distanz Sortierung</div>
 
 <div class="filters">
 
-<input
-id="userLoc"
-placeholder="Ort eingeben"
-/>
+<input id="userLoc" placeholder="Ort eingeben (z.B. Zürich)" />
 
 <select id="suggest">
-
-<option value="">
-Ort wählen
-</option>
-
-${uniqueCities.map(city => `
-
-<option value="${city}">
-${city}
-</option>
-`).join("")}
-
+  <option value="">Vorschlag</option>
+  ${cities.map(c => `<option value="${c}">${c}</option>`).join("")}
 </select>
 
-<button onclick="sortByDistance()">
-Nach Nähe sortieren
-</button>
+<button onclick="sortByDistance()">Sortieren</button>
 
 </div>
 
 <div class="container">
 
 <table>
-
 <thead>
 <tr>
 <th>Name</th>
 <th>Ort</th>
 <th>Typus</th>
-<th>Stufen</th>
-<th>Distanz</th>
+<th>Distanz (km)</th>
 </tr>
 </thead>
 
@@ -164,180 +181,121 @@ Nach Nähe sortieren
 
 const data = ${JSON.stringify(data)};
 
-const cache = {};
+let cache = {};
 
-async function getCoords(place){
+async function getCoords(place) {
+  if (!place) return null;
 
-  if(!place) return null;
+  if (cache[place]) return cache[place];
 
-  if(cache[place]){
-    return cache[place];
-  }
-
-  const response = await fetch(
-    "https://nominatim.openstreetmap.org/search?format=json&q="
-    + encodeURIComponent(place)
-  );
-
-  const json = await response.json();
-
-  if(!json[0]){
-    return null;
-  }
-
-  const coords = {
-    lat:parseFloat(json[0].lat),
-    lon:parseFloat(json[0].lon)
-  };
-
-  cache[place] = coords;
-
-  return coords;
-}
-
-function distanceKm(a,b){
-
-  const R = 6371;
-
-  const dLat =
-    (b.lat-a.lat) * Math.PI/180;
-
-  const dLon =
-    (b.lon-a.lon) * Math.PI/180;
-
-  const x =
-    Math.sin(dLat/2) * Math.sin(dLat/2)
-    +
-    Math.cos(a.lat*Math.PI/180)
-    *
-    Math.cos(b.lat*Math.PI/180)
-    *
-    Math.sin(dLon/2)
-    *
-    Math.sin(dLon/2);
-
-  const c =
-    2 *
-    Math.atan2(
-      Math.sqrt(x),
-      Math.sqrt(1-x)
+  try {
+    const res = await fetch(
+      "https://nominatim.openstreetmap.org/search?format=json&q=" +
+      encodeURIComponent(place)
     );
 
-  return R*c;
+    const json = await res.json();
+
+    if (!json[0]) return null;
+
+    const coords = {
+      lat: parseFloat(json[0].lat),
+      lon: parseFloat(json[0].lon)
+    };
+
+    cache[place] = coords;
+
+    return coords;
+
+  } catch (e) {
+    return null;
+  }
 }
 
-function render(rows){
+function distanceKm(a, b) {
+  const R = 6371;
+
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+
+  const x =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * Math.PI / 180) *
+    Math.cos(b.lat * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
+
+  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function render(rows) {
 
   let html = "";
 
-  rows.forEach(function(d){
-
-    html +=
-      "<tr>" +
-      "<td>" + (d.Name || "") + "</td>" +
-      "<td>" + (d.Ort || "") + "</td>" +
-      "<td>" + (d.Typus || "") + "</td>" +
-      "<td>" + (d.Stufen || "") + "</td>" +
-      "<td>" +
-      (
-        d.dist
-        ? Number(d.dist).toFixed(1)
-        : "-"
-      ) +
-      "</td>" +
+  rows.forEach(r => {
+    html += "<tr>" +
+      "<td>" + (r.Name || "") + "</td>" +
+      "<td>" + (r.Ort || "") + "</td>" +
+      "<td>" + (r.Typus || "") + "</td>" +
+      "<td>" + (r.dist ? r.dist.toFixed(1) : "-") + "</td>" +
       "</tr>";
-
   });
 
-  document.getElementById("body").innerHTML =
-    html;
+  document.getElementById("body").innerHTML = html;
 }
 
-async function sortByDistance(){
-
-  const input =
-    document.getElementById("userLoc").value;
-
-  const dropdown =
-    document.getElementById("suggest").value;
+async function sortByDistance() {
 
   const place =
-    input || dropdown;
+    document.getElementById("userLoc").value ||
+    document.getElementById("suggest").value;
 
-  if(!place){
+  if (!place) {
     render(data);
     return;
   }
 
-  const user =
-    await getCoords(place);
+  const user = await getCoords(place);
 
-  if(!user){
+  if (!user) {
     alert("Ort nicht gefunden");
     return;
   }
 
-  const enriched =
-    await Promise.all(
+  const enriched = [];
 
-      data.map(async function(row){
+  for (const d of data) {
 
-        const target =
-          await getCoords(row.Ort);
+    let dist = 999999;
 
-        let dist = 999999;
+    const target = await getCoords(d.Ort);
 
-        if(target){
-          dist =
-            distanceKm(
-              user,
-              target
-            );
-        }
+    if (target) {
+      dist = distanceKm(user, target);
+    }
 
-        return {
-          ...row,
-          dist
-        };
+    enriched.push({ ...d, dist });
+  }
 
-      })
-
-    );
-
-  enriched.sort(
-    (a,b) => a.dist - b.dist
-  );
+  enriched.sort((a, b) => a.dist - b.dist);
 
   render(enriched);
 }
 
-document
-.getElementById("suggest")
-.addEventListener(
-  "change",
-  function(e){
-    document
-      .getElementById("userLoc")
-      .value =
-      e.target.value;
-  }
-);
-
 render(data);
+
+document.getElementById("suggest").addEventListener("change", e => {
+  document.getElementById("userLoc").value = e.target.value;
+});
 
 </script>
 
 </body>
 </html>
-`);
+  `);
 });
 
-const PORT =
-process.env.PORT || 3000;
-
+// 🚀 START
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-console.log(
-"Server läuft auf Port",
-PORT
-);
+  console.log("Server läuft auf", PORT);
 });
