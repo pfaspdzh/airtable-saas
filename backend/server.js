@@ -12,29 +12,29 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// 📊 DATA
-app.get("/data", async (req, res) => {
-  const { data, error } = await supabase
-    .from("projects")
-    .select("*");
-
-  if (error) return res.status(500).json(error);
-
-  res.json(data);
-});
-
 // 🧠 Cache
 const cache = {};
 
-// 🌍 Geocoding (Open-Meteo – stabil & kein Blocking)
+// 🧼 Normalize (WICHTIG: FIX für "(ZH)")
+function normalizePlace(place) {
+  return place
+    .replace(/\(ZH\)/g, "")
+    .replace(/\(.*?\)/g, "")
+    .trim();
+}
+
+// 🌍 Geocoding
 async function getCoords(place) {
   if (!place) return null;
-  if (cache[place]) return cache[place];
+
+  const clean = normalizePlace(place);
+
+  if (cache[clean]) return cache[clean];
 
   try {
     const res = await fetch(
       "https://geocoding-api.open-meteo.com/v1/search?name=" +
-      encodeURIComponent(place)
+      encodeURIComponent(clean)
     );
 
     const json = await res.json();
@@ -45,7 +45,7 @@ async function getCoords(place) {
         lon: json.results[0].longitude
       };
 
-      cache[place] = coords;
+      cache[clean] = coords;
       return coords;
     }
   } catch (e) {}
@@ -69,168 +69,48 @@ function distanceKm(a, b) {
   return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
-// 🧠 Wikipedia Gemeinden (fix eingebaut – keine API nötig)
+// 📊 DATA API
+app.get("/data", async (req, res) => {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*");
+
+  if (error) return res.status(500).json(error);
+
+  res.json(data);
+});
+
+// 🌍 Gemeinden (UNCHANGED)
 const ZUERICH_GEMEINDEN = [
-  "Adliswil",
-  "Aesch (ZH)",
-  "Aeugst am Albis",
-  "Affoltern am Albis",
-  "Altikon",
-  "Andelfingen",
-  "Bachenbülach",
-  "Bachs",
-  "Bäretswil",
-  "Bassersdorf",
-  "Bauma",
-  "Benken (ZH)",
-  "Berg am Irchel",
-  "Birmensdorf (ZH)",
-  "Bonstetten",
-  "Boppelsen",
-  "Brütten",
-  "Bubikon",
-  "Buch am Irchel",
-  "Buchs (ZH)",
-  "Bülach",
-  "Dachsen",
-  "Dägerlen",
-  "Dällikon",
-  "Dänikon",
-  "Dättlikon",
-  "Dielsdorf",
-  "Dietikon",
-  "Dietlikon",
-  "Dinhard",
-  "Dorf",
-  "Dübendorf",
-  "Dürnten",
-  "Egg",
-  "Eglisau",
-  "Elgg",
-  "Ellikon an der Thur",
-  "Elsau",
-  "Embrach",
-  "Erlenbach (ZH)",
-  "Fällanden",
-  "Fehraltorf",
-  "Feuerthalen",
-  "Fischenthal",
-  "Flaach",
-  "Flurlingen",
-  "Freienstein-Teufen",
-  "Geroldswil",
-  "Glattfelden",
-  "Gossau (ZH)",
-  "Greifensee",
-  "Grüningen",
-  "Hagenbuch",
-  "Hausen am Albis",
-  "Hedingen",
-  "Henggart",
-  "Herrliberg",
-  "Hettlingen",
-  "Hinwil",
-  "Hittnau",
-  "Hochfelden",
-  "Hombrechtikon",
-  "Horgen",
-  "Höri",
-  "Hüntwangen",
-  "Hüttikon",
-  "Illnau-Effretikon",
-  "Kappel am Albis",
-  "Kilchberg (ZH)",
-  "Kleinandelfingen",
-  "Kloten",
-  "Knonau",
-  "Küsnacht",
-  "Langnau am Albis",
-  "Laufen-Uhwiesen",
-  "Lindau",
-  "Lufingen",
-  "Männedorf",
-  "Marthalen",
-  "Maschwanden",
-  "Maur",
-  "Meilen",
-  "Mettmenstetten",
-  "Mönchaltorf",
-  "Neerach",
-  "Neftenbach",
-  "Niederglatt",
-  "Niederhasli",
-  "Niederweningen",
-  "Nürensdorf",
-  "Oberembrach",
-  "Oberengstringen",
-  "Oberglatt",
-  "Oberrieden",
-  "Oberweningen",
-  "Obfelden",
-  "Oetwil am See",
-  "Oetwil an der Limmat",
-  "Opfikon",
-  "Ossingen",
-  "Otelfingen",
-  "Ottenbach",
-  "Pfäffikon",
-  "Pfungen",
-  "Rafz",
-  "Regensberg",
-  "Regensdorf",
-  "Rheinau",
-  "Richterswil",
-  "Rickenbach (ZH)",
-  "Rifferswil",
-  "Rorbas",
-  "Rümlang",
-  "Rüschlikon",
-  "Russikon",
-  "Rüti (ZH)",
-  "Schlatt (ZH)",
-  "Schleinikon",
-  "Schlieren",
-  "Schöfflisdorf",
-  "Schwerzenbach",
-  "Seegräben",
-  "Seuzach",
-  "Stadel",
-  "Stammheim",
-  "Stäfa",
-  "Stallikon",
-  "Steinmaur",
-  "Thalheim an der Thur",
-  "Thalwil",
-  "Trüllikon",
-  "Truttikon",
-  "Turbenthal",
-  "Uetikon am See",
-  "Uitikon",
-  "Unterengstringen",
-  "Urdorf",
-  "Uster",
-  "Volken",
-  "Volketswil",
-  "Wädenswil",
-  "Wald (ZH)",
-  "Wallisellen",
-  "Wangen-Brüttisellen",
-  "Wasterkingen",
-  "Weiach",
-  "Weiningen (ZH)",
-  "Weisslingen",
-  "Wettswil am Albis",
-  "Wetzikon",
-  "Wiesendangen",
-  "Wil (ZH)",
-  "Wila",
-  "Wildberg",
-  "Winkel",
-  "Winterthur",
-  "Zell (ZH)",
-  "Zollikon",
-  "Zumikon",
-  "Zürich"
+  "Adliswil","Aesch (ZH)","Aeugst am Albis","Affoltern am Albis","Altikon",
+  "Andelfingen","Bachenbülach","Bachs","Bäretswil","Bassersdorf","Bauma",
+  "Benken (ZH)","Berg am Irchel","Birmensdorf (ZH)","Bonstetten","Boppelsen",
+  "Brütten","Bubikon","Buch am Irchel","Buchs (ZH)","Bülach","Dachsen",
+  "Dägerlen","Dällikon","Dänikon","Dättlikon","Dielsdorf","Dietikon",
+  "Dietlikon","Dinhard","Dorf","Dübendorf","Dürnten","Egg","Eglisau",
+  "Elgg","Ellikon an der Thur","Elsau","Embrach","Erlenbach (ZH)",
+  "Fällanden","Fehraltorf","Feuerthalen","Fischenthal","Flaach","Flurlingen",
+  "Freienstein-Teufen","Geroldswil","Glattfelden","Gossau (ZH)","Greifensee",
+  "Grüningen","Hagenbuch","Hausen am Albis","Hedingen","Henggart",
+  "Herrliberg","Hettlingen","Hinwil","Hittnau","Hochfelden","Hombrechtikon",
+  "Horgen","Höri","Hüntwangen","Hüttikon","Illnau-Effretikon","Kappel am Albis",
+  "Kilchberg (ZH)","Kleinandelfingen","Kloten","Knonau","Küsnacht",
+  "Langnau am Albis","Laufen-Uhwiesen","Lindau","Lufingen","Männedorf",
+  "Marthalen","Maschwanden","Maur","Meilen","Mettmenstetten","Mönchaltorf",
+  "Neerach","Neftenbach","Niederglatt","Niederhasli","Niederweningen",
+  "Nürensdorf","Oberembrach","Oberengstringen","Oberglatt","Oberrieden",
+  "Oberweningen","Obfelden","Oetwil am See","Oetwil an der Limmat","Opfikon",
+  "Ossingen","Otelfingen","Ottenbach","Pfäffikon","Pfungen","Rafz",
+  "Regensberg","Regensdorf","Rheinau","Richterswil","Rickenbach (ZH)",
+  "Rifferswil","Rorbas","Rümlang","Rüschlikon","Russikon","Rüti (ZH)",
+  "Schlatt (ZH)","Schleinikon","Schlieren","Schöfflisdorf","Schwerzenbach",
+  "Seegräben","Seuzach","Stadel","Stammheim","Stäfa","Stallikon","Steinmaur",
+  "Thalheim an der Thur","Thalwil","Trüllikon","Truttikon","Turbenthal",
+  "Uetikon am See","Uitikon","Unterengstringen","Urdorf","Uster","Volken",
+  "Volketswil","Wädenswil","Wald (ZH)","Wallisellen","Wangen-Brüttisellen",
+  "Wasterkingen","Weiach","Weiningen (ZH)","Weisslingen","Wettswil am Albis",
+  "Wetzikon","Wiesendangen","Wil (ZH)","Wila","Wildberg","Winkel",
+  "Winterthur","Zell (ZH)","Zollikon","Zumikon","Zürich"
 ];
 
 // 🌐 FRONTEND
@@ -292,12 +172,23 @@ ${ZUERICH_GEMEINDEN.map(o => `<option value="${o}">${o}</option>`).join("")}
 const data = ${JSON.stringify(data)};
 const cache = {};
 
+// 🧼 FIX FRONTEND NORMALIZATION
+function normalizePlace(place){
+  return place
+    .replace(/\(ZH\)/g,"")
+    .replace(/\(.*?\)/g,"")
+    .trim();
+}
+
 async function getCoords(place){
-  if(cache[place]) return cache[place];
+
+  const clean = normalizePlace(place);
+
+  if(cache[clean]) return cache[clean];
 
   const res = await fetch(
     "https://geocoding-api.open-meteo.com/v1/search?name="
-    + encodeURIComponent(place)
+    + encodeURIComponent(clean)
   );
 
   const json = await res.json();
@@ -308,7 +199,7 @@ async function getCoords(place){
       lon: json.results[0].longitude
     };
 
-    cache[place]=c;
+    cache[clean]=c;
     return c;
   }
 
